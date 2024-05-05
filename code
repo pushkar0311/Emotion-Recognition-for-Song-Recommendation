@@ -1,0 +1,133 @@
+import os
+import random
+import librosa
+import numpy as np
+import pygame
+from sklearn.svm import SVC
+import threading
+import cv2
+from fer import FER
+
+# Function to extract features from audio files
+def extract_features(audio_path, duration=30):
+    y, sr = librosa.load(audio_path, duration=duration)
+    mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+    chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+   
+    # Ensure all features have the same number of time steps
+    min_length = min(mfccs.shape[1], spectral_centroid.shape[0], chroma.shape[1])
+    mfccs = mfccs[:, :min_length]
+    spectral_centroid = spectral_centroid[:min_length]
+    chroma = chroma[:, :min_length]
+   
+    # Reshape spectral centroid to match the shape of mfccs and chroma
+    spectral_centroid = np.expand_dims(spectral_centroid, axis=0)
+   
+    # Concatenate features
+    features = np.concatenate((mfccs.mean(axis=1), spectral_centroid.mean(axis=0), chroma.mean(axis=1)))
+    return features
+
+# Function to preprocess data
+def preprocess_data(data_dir):
+    X = []
+    y = []
+    song_emotion_mapping = {}
+    emotions = os.listdir(data_dir)
+    for i, emotion in enumerate(emotions):
+        emotion_dir = os.path.join(data_dir, emotion)
+        for file_name in os.listdir(emotion_dir):
+            file_path = os.path.join(emotion_dir, file_name)
+            features = extract_features(file_path)
+            X.append(features)
+            y.append(i)  # Using index of emotion as label
+            song_emotion_mapping[file_name] = emotion
+    return np.array(X), np.array(y), song_emotion_mapping
+
+# Define a dictionary to map emotion labels to their corresponding numbers
+emotion_mapping = {
+    0: 'Happy',
+    1: 'Sad',
+    2: 'Angry',
+    3: 'Neutral'
+}
+
+# Load and preprocess data
+data_dir = "C:\\Users\\pushk\\OneDrive\\Desktop\\wbpbl\\aaaaaaaaa\\dataset"
+X, y, song_emotion_mapping = preprocess_data(data_dir)
+
+# Train SVM classifier
+svm_model = SVC(kernel='linear')
+svm_model.fit(X, y)
+
+# Function to select a random song from dataset1
+def select_random_song(data_dir):
+    song_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
+    random_song = random.choice(song_files)
+    return random_song
+
+# Function to stop the song
+def stop_song():
+    pygame.mixer.music.stop()
+
+# Initialize emotion detector
+emotion_detector = FER(mtcnn=True)
+
+# Initialize webcam
+cap = cv2.VideoCapture(0)  # Use 0 for the default webcam
+
+# Initialize pygame mixer
+pygame.mixer.init()
+
+emotion_detected = False  # Flag to indicate whether emotion is detected or not
+
+while True:
+    if not emotion_detected:  # Check if emotion is not detected yet
+        # Capture frame-by-frame
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Convert frame from BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Detect emotions
+        analysis = emotion_detector.detect_emotions(frame_rgb)
+
+        # Display detected emotion on the frame
+        if analysis:
+            detected_emotion = max(analysis[0]['emotions'], key=analysis[0]['emotions'].get)
+            emotion_label = emotion_mapping[{'happy': 0, 'sad': 1, 'angry': 2, 'neutral': 3}[detected_emotion.lower()]]
+            cv2.putText(frame, f"Detected Emotion: {emotion_label}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+           
+            # Set emotion_detected flag to True
+            emotion_detected = True
+
+    # Show the frame
+    cv2.imshow('Emotion Detection', frame)
+
+    # Play song corresponding to the detected emotion
+    if emotion_detected:
+        selected_song = select_random_song("C:\\Users\\pushk\\OneDrive\\Desktop\\wbpbl\\aaaaaaaaa\\dataset1")
+        pygame.mixer.music.load(selected_song)
+        pygame.mixer.music.play()
+
+        # Automatically stop the song after 10 seconds
+        stop_timer = threading.Timer(10.0, stop_song)
+        stop_timer.start()
+
+        # Wait for the song to finish playing or for user input to stop
+        while pygame.mixer.music.get_busy() and stop_timer.is_alive():
+            user_input = cv2.waitKey(1) & 0xFF
+            if user_input == ord('q'):  # Press 'q' to stop the song
+                stop_timer.cancel()
+                stop_song()
+                break
+
+    # Exit if 'q' is pressed
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release the capture
+cap.release()
+cv2.destroyAllWindows()
